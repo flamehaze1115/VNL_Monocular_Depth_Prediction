@@ -27,6 +27,9 @@ if __name__ == '__main__':
     # load model
     model = MetricDepthModel()
 
+    print('number of parameters : %.2f M' %
+          (sum(p.numel() for p in self.model.parameters() if p.requires_grad) / 1e6))
+
     model.eval()
 
     # load checkpoint

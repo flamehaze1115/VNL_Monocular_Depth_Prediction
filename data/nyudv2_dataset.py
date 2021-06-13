@@ -12,56 +12,142 @@ logger = setup_logging(__name__)
 
 
 class NYUDV2Dataset():
-    def initialize(self, opt):
+    def initialize(self, opt, depth_mask=False):
         self.opt = opt
         self.root = opt.dataroot
-        self.depth_normalize = 60000.
-        self.dir_anno = os.path.join(cfg.ROOT_DIR, opt.dataroot, 'annotations', opt.phase_anno + '_annotations.json')
+        self.depth_normalize = 10.
+
+        self.depth_mask = depth_mask
+
+        self.split = self.opt.phase_anno
+
+        _sample_dir = os.path.join(self.root, self.opt.phase_anno)
+
+        if self.split == 'train':
+            self.sample_ids = natsorted(os.listdir(_sample_dir))
+            self.samples = [os.path.join(_sample_dir, x) for x in self.sample_ids]
+        else:
+            self.sample_ids = natsorted(os.listdir(os.path.join(_sample_dir, 'images')))
+
         self.A_paths, self.B_paths, self.AB_anno = self.getData()
         self.data_size = len(self.AB_anno)
         self.uniform_size = (480, 640)
 
-    def getData(self):
-        with open(self.dir_anno, 'r') as load_f:
-            AB_anno = json.load(load_f)
-        if 'dir_AB' in AB_anno[0].keys():
-            self.dir_AB = os.path.join(cfg.ROOT_DIR, self.opt.dataroot, self.opt.phase_anno, AB_anno[0]['dir_AB'])
-            AB = sio.loadmat(self.dir_AB)
-            self.A = AB['rgbs']
-            self.B = AB['depths']
-            self.depth_normalize = 10.0
-        else:
-            self.A = None
-            self.B = None
-        A_list = [os.path.join(cfg.ROOT_DIR, self.opt.dataroot, self.opt.phase_anno, AB_anno[i]['rgb_path']) for i in range(len(AB_anno))]
-        B_list = [os.path.join(cfg.ROOT_DIR, self.opt.dataroot, self.opt.phase_anno, AB_anno[i]['depth_path']) for i in range(len(AB_anno))]
-        logger.info('Loaded NYUDV2 data!')
-        return A_list, B_list, AB_anno
+    def _load_training_sample(self, index):
 
+        """
+        Each sample are padded by one pixel (right and bottom) to have size 481 x 641
+        fields:
+        depth: callibrated depth maps, "0" indicates invalid measurements which you should ignore when training model
+        grid: used by our code
+        img: if you want to convert the img to the original format you should do the folowing:
+            img(:,:,1) = img(:,:,1) + 2* 122.175
+            img(:,:,2) = img(:,:,2) + 2* 116.169
+            img(:,:,3) = img(:,:,3) + 2* 103.508
+            img        = uint8(img)
+        mask: valid values for surface normal
+        norm: precomputed surface normal following https://github.com/aayushbansal/MarrRevisited
+        """
+
+        sample = sio.loadmat(self.samples[index])
+        img = sample['img'][:-1, :-1, :]  # [480, 640, 3]
+        depth = sample['depth'][:-1, :-1]  # [480, 640]
+        norm = sample['norm'][:-1, :-1, :]  # [480, 640, 3]
+        mask = sample['mask'][:-1, :-1]  # [480, 640]
+        mask = mask > 0.5  # convert to boolean
+
+        # convert to original format
+        img[:, :, 0] = img[:, :, 0] + 2 * 122.175
+        img[:, :, 1] = img[:, :, 1] + 2 * 116.169
+        img[:, :, 2] = img[:, :, 2] + 2 * 103.508
+        img = np.uint8(img)
+
+        # invalid areas are set to 0
+        norm[:, :, 0][~mask] = 0
+        norm[:, :, 1][~mask] = 0
+        norm[:, :, 2][~mask] = 0
+
+        #         depth[~mask] = 0
+
+        return img, depth, norm
+
+    def _load_val_sample(self, index):
+        img = np.load(os.path.join(self.sample_dir, 'images', self.sample_ids[index]))
+        depth = np.load(os.path.join(self.sample_dir, 'depths', self.sample_ids[index]))
+        depth[depth > 10.0] = 0
+        _invalid_mask = np.ones_like(depth)
+        _invalid_mask[45:471, 41:601] = 0
+        _invalid_mask = _invalid_mask > 0
+        depth[_invalid_mask] = 0
+
+        try:
+            norm = np.load(os.path.join(self.sample_dir, 'normals', self.sample_ids[index]))
+            mask = np.load(os.path.join(self.sample_dir, 'masks', self.sample_ids[index]))
+            mask = mask > 0.5
+
+            # invalid areas are set to 0
+            #         depth[~mask] = 0
+
+            norm[:, :, 0][~mask] = 0
+            norm[:, :, 1][~mask] = 0
+            norm[:, :, 2][~mask] = 0
+
+            if self.depth_mask:
+                depth[~mask] = 0
+        except:
+            h, w = np.shape(depth)
+            norm = np.zeros((h, w, 3))
+
+        return img, depth, norm
+
+    def get_one_sample(self, index):
+
+        if self.split == 'train':
+            _img, _depth, _norm = self._load_training_sample(index)
+        elif self.split == 'val' or self.split == 'test':
+            _img, _depth, _norm = self._load_val_sample(index)
+
+        return _img, _depth
 
     def __getitem__(self, anno_index):
-        data = self.online_aug(anno_index)
+        if self.split == 'val' or self.split == 'test':
+            _img, _depth = self.get_one_sample(
+                index)  # if use try except; when iterate the object, cannot stop for loop
+        else:
+            flag = True
+            while flag:
+                try:
+                    _img, _depth = self.get_one_sample(index)
+                    flag = False
+                except:
+                    tmp = np.random.randint(0, self.__len__(), 1)[0]
+                    print("data load error!", index, "use:  ", tmp)
+                    index = tmp
+
+        data = self.online_aug(_img, _depth)
         return data
 
-    def online_aug(self, anno_index):
+    def online_aug(self, A, B):
         """
+        A image B depth
         Augment data for training online randomly. The invalid parts in the depth map are set to -1.0, while the parts
         in depth bins are set to cfg.MODEL.DECODER_OUTPUT_C + 1.
         :param anno_index: data index.
         """
-        A_path = self.A_paths[anno_index]
-        B_path = self.B_paths[anno_index]
+        # A_path = self.A_paths[anno_index]
+        # B_path = self.B_paths[anno_index]
+        #
+        # if self.A is None:
+        #     A = cv2.imread(A_path)  # bgr, H*W*C
+        #     B = cv2.imread(B_path, -1) / self.depth_normalize  # the max depth is 10m
+        # else:
+        #     A = self.A[anno_index]  # C*W*H
+        #     B = self.B[anno_index] / self.depth_normalize  # the max depth is 10m
+        #     A = A.transpose((2, 1, 0))  # H * W * C
+        #     B = B.transpose((1, 0))  # H * W
+        #     A = A[:, :, ::-1].copy()  # rgb -> bgr
 
-        if self.A is None:
-            A = cv2.imread(A_path)  # bgr, H*W*C
-            B = cv2.imread(B_path, -1) / self.depth_normalize  # the max depth is 10m
-        else:
-            A = self.A[anno_index]  # C*W*H
-            B = self.B[anno_index] / self.depth_normalize # the max depth is 10m
-            A = A.transpose((2, 1, 0))  # H * W * C
-            B = B.transpose((1, 0))  # H * W
-            A = A[:, :, ::-1].copy() #rgb -> bgr
-
+        B = B / self.depth_normalize
         flip_flg, crop_size, pad, resize_ratio = self.set_flip_pad_reshape_crop()
 
         A_resize = self.flip_pad_reshape_crop(A, flip_flg, crop_size, pad, 128)
@@ -97,16 +183,16 @@ class NYUDV2Dataset():
         size_index = np.random.randint(0, 9) if 'train' in self.opt.phase else 8
 
         # pad
-        pad_height = raw_size[size_index] - self.uniform_size[0] if raw_size[size_index] > self.uniform_size[0]\
-                    else 0
+        pad_height = raw_size[size_index] - self.uniform_size[0] if raw_size[size_index] > self.uniform_size[0] \
+            else 0
         pad = [pad_height, 0, 0, 0]  # [up, down, left, right]
 
         # crop
         crop_height = raw_size[size_index]
         crop_width = raw_size[size_index]
-        start_x = np.random.randint(0, int(self.uniform_size[1] - crop_width)+1)
+        start_x = np.random.randint(0, int(self.uniform_size[1] - crop_width) + 1)
         start_y = 0 if pad_height != 0 else np.random.randint(0,
-                int(self.uniform_size[0] - crop_height) + 1)
+                                                              int(self.uniform_size[0] - crop_height) + 1)
         crop_size = [start_x, start_y, crop_height, crop_width]
 
         resize_ratio = float(cfg.DATASET.CROP_SIZE[1] / crop_width)
@@ -130,7 +216,7 @@ class NYUDV2Dataset():
         # Pad the raw image
         if len(img.shape) == 3:
             img_pad = np.pad(img, ((pad[0], pad[1]), (pad[2], pad[3]), (0, 0)), 'constant',
-                       constant_values=(pad_value, pad_value))
+                             constant_values=(pad_value, pad_value))
         else:
             img_pad = np.pad(img, ((pad[0], pad[1]), (pad[2], pad[3])), 'constant',
                              constant_values=(pad_value, pad_value))
@@ -138,7 +224,8 @@ class NYUDV2Dataset():
         img_crop = img_pad[crop_size[1]:crop_size[1] + crop_size[3], crop_size[0]:crop_size[0] + crop_size[2]]
 
         # Resize the raw image
-        img_resize = cv2.resize(img_crop, (cfg.DATASET.CROP_SIZE[1], cfg.DATASET.CROP_SIZE[0]), interpolation=cv2.INTER_LINEAR)
+        img_resize = cv2.resize(img_crop, (cfg.DATASET.CROP_SIZE[1], cfg.DATASET.CROP_SIZE[0]),
+                                interpolation=cv2.INTER_LINEAR)
         return img_resize
 
     def depth_to_bins(self, depth):
@@ -178,4 +265,3 @@ class NYUDV2Dataset():
 
     def name(self):
         return 'NYUDV2'
-

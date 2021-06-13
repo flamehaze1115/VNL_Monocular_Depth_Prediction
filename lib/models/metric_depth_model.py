@@ -37,7 +37,7 @@ class MetricDepthModel(nn.Module):
             return {'b_fake': out}
 
     def inference_kitti(self, data):
-        #crop kitti images into 3 parts
+        # crop kitti images into 3 parts
         with torch.no_grad():
             self.a_l_real = data['A_l'].cuda()
             _, b_l_classes = self.depth_model(self.a_l_real)
@@ -51,7 +51,8 @@ class MetricDepthModel(nn.Module):
             _, b_r_classes = self.depth_model(self.a_r_real)
             self.b_r_fake = bins_to_depth(b_r_classes)
 
-            out = kitti_merge_imgs(self.b_l_fake, self.b_m_fake, self.b_r_fake, torch.squeeze(data['B_raw']).shape, data['crop_lmr'])
+            out = kitti_merge_imgs(self.b_l_fake, self.b_m_fake, self.b_r_fake, torch.squeeze(data['B_raw']).shape,
+                                   data['crop_lmr'])
             return {'b_fake': out}
 
 
@@ -59,7 +60,8 @@ class ModelLoss(object):
     def __init__(self):
         super(ModelLoss, self).__init__()
         self.weight_cross_entropy_loss = WCEL_Loss()
-        self.virtual_normal_loss = VNL_Loss(focal_x=cfg.DATASET.FOCAL_X, focal_y=cfg.DATASET.FOCAL_Y, input_size=cfg.DATASET.CROP_SIZE)
+        self.virtual_normal_loss = VNL_Loss(focal_x=cfg.DATASET.FOCAL_X, focal_y=cfg.DATASET.FOCAL_Y,
+                                            input_size=cfg.DATASET.CROP_SIZE)
 
     def criterion(self, pred_softmax, pred_logit, data, epoch):
         pred_depth = bins_to_depth(pred_softmax)
@@ -104,8 +106,9 @@ class ModelOptimizer(object):
             {'params': decoder_params,
              'lr': lr_decoder,
              'weight_decay': weight_decay},
-            ]
+        ]
         self.optimizer = torch.optim.SGD(net_params, momentum=0.9)
+
     def optim(self, loss):
         self.optimizer.zero_grad()
         loss_all = loss['total_loss']
@@ -122,6 +125,41 @@ class DepthModel(nn.Module):
 
     def forward(self, x):
         lateral_out, encoder_stage_size = self.encoder_modules(x)
+        out_logit, out_softmax = self.decoder_modules(lateral_out, encoder_stage_size)
+        return out_logit, out_softmax
+
+
+def get_backbone(backbonename):
+    if backbonename == 'hrnet_w18':
+        from models.seg_hrnet import hrnet_w18
+        # print(p['backbone_kwargs']['pretrained'])
+        backbone = hrnet_w18(True)
+        backbone_channels = [18, 36, 72, 144]
+
+    elif backbonename == 'hrnet_w48':
+        from models.seg_hrnet import hrnet_w48
+        backbone = hrnet_w48(True)
+        backbone_channels = [48, 96, 192, 384]
+    else:
+        raise NotImplementedError
+
+    return backbone
+
+
+class DepthModel_HRNET(nn.Module):
+    def __init__(self):
+        super(DepthModel_HRNET, self).__init__()
+        # bottom_up_model = 'lateral_net.lateral_' + cfg.MODEL.ENCODER
+        self.backbone = get_backbone(cfg.MODEL.ENCODER)
+        self.decoder_modules = lateral_net.fcn_topdown_hrnet(cfg.MODEL.ENCODER)
+
+    def forward(self, x):
+        _, _, h, w = x.shape
+
+        backbone_stage_size = [(math.ceil(h / (2.0 ** i)), math.ceil(w / (2.0 ** i))) for i in range(5, 0, -1)]
+        backbone_stage_size.append((h, w))
+
+        lateral_out = self.backbone(x)
         out_logit, out_softmax = self.decoder_modules(lateral_out, encoder_stage_size)
         return out_logit, out_softmax
 

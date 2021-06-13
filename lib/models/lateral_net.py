@@ -8,11 +8,14 @@ import lib.models.MobileNetV2 as MobileNetV2
 from torch.nn import functional as F
 import math
 
+
 def lateral_resnext50_32x4d_body_stride16():
     return lateral(ResNeXt.ResNeXt50_32x4d_body_stride16)
 
+
 def lateral_resnext101_32x4d_body_stride16():
     return lateral(ResNeXt.ResNeXt101_32x4d_body_stride16)
+
 
 def lateral_mobilenetv2_body_stride8():
     return lateral(MobileNetV2.MobileNetV2_body_stride8)
@@ -66,6 +69,7 @@ class lateral(nn.Module):
             elif isinstance(m, nn.BatchNorm2d):
                 nn.init.constant_(m.weight.data, 1.0)
                 nn.init.constant_(m.bias.data, 0.0)
+
         def init_model_weight(m):
             for child_m in m.children():
                 if not isinstance(child_m, nn.ModuleList):
@@ -79,7 +83,7 @@ class lateral(nn.Module):
 
     def forward(self, x):
         _, _, h, w = x.shape
-        backbone_stage_size = [(math.ceil(h/(2.0**i)), math.ceil(w/(2.0**i))) for i in range(5, 0, -1)]
+        backbone_stage_size = [(math.ceil(h / (2.0 ** i)), math.ceil(w / (2.0 ** i))) for i in range(5, 0, -1)]
         backbone_stage_size.append((h, w))
         bottemup_blocks_out = [self.bottomup.res1(x)]
         for i in range(1, self.bottomup.convX):
@@ -103,7 +107,8 @@ class Global_pool_block(nn.Module):
         self.globalpool_conv1x1 = nn.Conv2d(self.dim_in, self.dim_out, 1, stride=1, padding=0, bias=False)
         self.globalpool = nn.AdaptiveAvgPool2d((1, 1))
         self.globalpool_bn = nn.BatchNorm2d(self.dim_out, momentum=0.9)
-        self.unpool = nn.AdaptiveAvgPool2d((int(cfg.DATASET.CROP_SIZE[0] / output_stride), int(cfg.DATASET.CROP_SIZE[1] / output_stride)))
+        self.unpool = nn.AdaptiveAvgPool2d(
+            (int(cfg.DATASET.CROP_SIZE[0] / output_stride), int(cfg.DATASET.CROP_SIZE[1] / output_stride)))
 
     def forward(self, x):
         out = self.globalpool_conv1x1(x)
@@ -111,6 +116,7 @@ class Global_pool_block(nn.Module):
         out = self.globalpool(out)
         out = self.unpool(out)
         return out
+
 
 class ASPP_block(nn.Module):
     def __init__(self, dim_in, dim_out, dilate_rates, output_stride):
@@ -221,6 +227,61 @@ class fcn_topdown(nn.Module):
         return x6
 
 
+class fcn_topdown_hrnet(nn.Module):
+    def __init__(self, conv_body_func):
+        super().__init__()
+
+        self.dim_in = cfg.MODEL.FCN_DIM_IN
+        self.dim_out = cfg.MODEL.FCN_DIM_OUT + [cfg.MODEL.DECODER_OUTPUT_C]
+
+        self.num_fcn_topdown = len(self.dim_in)
+        aspp_blocks_num = 1 if 'mobilenetv2' in cfg.MODEL.ENCODER else 5
+        self.top = nn.Sequential(
+            nn.Conv2d(self.dim_in[0] * aspp_blocks_num, self.dim_in[0], 1, stride=1, padding=0, bias=False),
+            nn.BatchNorm2d(self.dim_in[0], 0.5)
+        )
+        self.topdown_fcn1 = fcn_topdown_block(self.dim_in[0], self.dim_out[0])
+        self.topdown_fcn2 = fcn_topdown_block(self.dim_in[1], self.dim_out[1])
+        self.topdown_fcn3 = fcn_topdown_block(self.dim_in[2], self.dim_out[2])
+        # self.topdown_fcn4 = fcn_topdown_block(self.dim_in[3], self.dim_out[3])
+        self.topdown_fcn5 = fcn_last_block(self.dim_in[3], self.dim_out[3])
+        self.topdown_predict = fcn_topdown_predict(self.dim_in[4], self.dim_out[4])
+
+        self.init_type = cfg.MODEL.INIT_TYPE
+        self._init_modules(self.init_type)
+
+    def _init_modules(self, init_type):
+        self._init_weights(init_type)
+
+    def _init_weights(self, init_type='xavier'):
+        def init_func(m):
+            if isinstance(m, nn.Conv2d):
+                if init_type == 'xavier':
+                    nn.init.xavier_normal_(m.weight)
+                if init_type == 'kaiming':
+                    nn.init.kaiming_normal(m.weight)
+                if init_type == 'gaussian':
+                    nn.init.normal_(m.weight, std=0.01)
+                if m.bias is not None:
+                    nn.init.constant_(m.bias, 0.0)
+            elif isinstance(m, nn.BatchNorm2d):
+                nn.init.normal_(m.weight.data, 1.0, 0.0)
+                nn.init.constant_(m.bias.data, 0.0)
+
+        for child_m in self.children():
+            child_m.apply(init_func)
+
+    def forward(self, laterals, backbone_stage_size):
+        x = self.top(laterals[0])
+        x1 = self.topdown_fcn1(laterals[1], x)
+        x2 = self.topdown_fcn2(laterals[2], x1)
+        x3 = self.topdown_fcn3(laterals[3], x2)
+        # x4 = self.topdown_fcn4(laterals[4], x3)
+        x5 = self.topdown_fcn5(x3, backbone_stage_size)
+        x6 = self.topdown_predict(x5)
+        return x6
+
+
 class fcn_topdown_block(nn.Module):
     def __init__(self, dim_in, dim_out):
         super().__init__()
@@ -232,7 +293,7 @@ class fcn_topdown_block(nn.Module):
     def forward(self, lateral, top, size=None):
         if lateral.shape != top.shape:
             h, w = lateral.size(2), lateral.size(3)
-            top = F.interpolate(input=top, size=(h, w), mode='bilinear',align_corners=True)
+            top = F.interpolate(input=top, size=(h, w), mode='bilinear', align_corners=True)
         out = self.afa_block(lateral, top)
         out = self.ftb_block(out)
         return out
@@ -308,7 +369,9 @@ class fcn_last_block(nn.Module):
         self.ftb = FTB_block(dim_in, dim_out)
 
     def forward(self, input, backbone_stage_size):
-        out = F.upsample(input=input, size=(backbone_stage_size[4][0], backbone_stage_size[4][1]), mode='bilinear', align_corners=True)
+        out = F.upsample(input=input, size=(backbone_stage_size[4][0], backbone_stage_size[4][1]), mode='bilinear',
+                         align_corners=True)
         out = self.ftb(out)
-        out = F.upsample(input=out, size=(backbone_stage_size[5][0], backbone_stage_size[5][1]), mode='bilinear', align_corners=True)
+        out = F.upsample(input=out, size=(backbone_stage_size[5][0], backbone_stage_size[5][1]), mode='bilinear',
+                         align_corners=True)
         return out
