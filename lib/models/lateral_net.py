@@ -8,6 +8,7 @@ import lib.models.MobileNetV2 as MobileNetV2
 from torch.nn import functional as F
 import math
 
+import pdb
 
 def lateral_resnext50_32x4d_body_stride16():
     return lateral(ResNeXt.ResNeXt50_32x4d_body_stride16)
@@ -237,7 +238,7 @@ class fcn_topdown_hrnet(nn.Module):
         self.num_fcn_topdown = len(self.dim_in)
         aspp_blocks_num = 1 if 'mobilenetv2' in cfg.MODEL.ENCODER else 5
         self.top = nn.Sequential(
-            nn.Conv2d(self.dim_in[0] * aspp_blocks_num, self.dim_in[0], 1, stride=1, padding=0, bias=False),
+            nn.Conv2d(self.dim_in[0], self.dim_in[0], 1, stride=1, padding=0, bias=False),
             nn.BatchNorm2d(self.dim_in[0], 0.5)
         )
         self.topdown_fcn1 = fcn_topdown_block(self.dim_in[0], self.dim_out[0])
@@ -272,12 +273,18 @@ class fcn_topdown_hrnet(nn.Module):
             child_m.apply(init_func)
 
     def forward(self, laterals, backbone_stage_size):
-        x = self.top(laterals[0])
+        laterals = laterals[::-1]
+        x = self.top(laterals[0])  # outdim 144
+        pdb.set_trace()
         x1 = self.topdown_fcn1(laterals[1], x)
+        pdb.set_trace()
         x2 = self.topdown_fcn2(laterals[2], x1)
+        pdb.set_trace()
         x3 = self.topdown_fcn3(laterals[3], x2)
+        pdb.set_trace()
         # x4 = self.topdown_fcn4(laterals[4], x3)
         x5 = self.topdown_fcn5(x3, backbone_stage_size)
+        pdb.set_trace()
         x6 = self.topdown_predict(x5)
         return x6
 

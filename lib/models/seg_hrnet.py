@@ -510,7 +510,7 @@ class HighResolutionHead(nn.Module):
 
 def hrnet_w18(pretrained=False):
     import yaml
-    from utils.mypath import PROJECT_ROOT_DIR
+    PROJECT_ROOT_DIR = "/userhome/cs/xxlong/workplace/MTL/VNL_Monocular_Depth_Prediction/lib/"
     hrnet_cfg = os.path.join(PROJECT_ROOT_DIR, 'models', 'model_info', 'hrnet_w18.yml')
      
     with open(hrnet_cfg, 'r') as stream:

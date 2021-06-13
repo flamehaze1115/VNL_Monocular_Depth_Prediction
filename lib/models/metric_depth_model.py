@@ -7,13 +7,14 @@ from lib.models.WCEL_loss import WCEL_Loss
 from lib.models.VNL_loss import VNL_Loss
 from lib.models.image_transfer import bins_to_depth, kitti_merge_imgs
 from lib.core.config import cfg
-
+import math
 
 class MetricDepthModel(nn.Module):
     def __init__(self):
         super(MetricDepthModel, self).__init__()
         self.loss_names = ['Weighted_Cross_Entropy', 'Virtual_Normal']
-        self.depth_model = DepthModel()
+#         self.depth_model = DepthModel()
+        self.depth_model = DepthModel_HRNET()
 
     def forward(self, data):
         # Input data is a_real, predicted data is b_fake, groundtruth is b_real
@@ -131,13 +132,13 @@ class DepthModel(nn.Module):
 
 def get_backbone(backbonename):
     if backbonename == 'hrnet_w18':
-        from models.seg_hrnet import hrnet_w18
+        from lib.models.seg_hrnet import hrnet_w18
         # print(p['backbone_kwargs']['pretrained'])
         backbone = hrnet_w18(True)
         backbone_channels = [18, 36, 72, 144]
 
     elif backbonename == 'hrnet_w48':
-        from models.seg_hrnet import hrnet_w48
+        from lib.models.seg_hrnet import hrnet_w48
         backbone = hrnet_w48(True)
         backbone_channels = [48, 96, 192, 384]
     else:
@@ -160,7 +161,7 @@ class DepthModel_HRNET(nn.Module):
         backbone_stage_size.append((h, w))
 
         lateral_out = self.backbone(x)
-        out_logit, out_softmax = self.decoder_modules(lateral_out, encoder_stage_size)
+        out_logit, out_softmax = self.decoder_modules(lateral_out, backbone_stage_size)
         return out_logit, out_softmax
 
 

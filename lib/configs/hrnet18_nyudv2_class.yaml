@@ -1,6 +1,6 @@
 MODEL:
   INIT_TYPE: 'xavier'
-  ENCODER: 'resnext50_32x4d_body_stride16'
+  ENCODER: 'hrnet_w18'
   MODEL_REPOSITORY: 'datasets/pretrained_model'
   PRETRAINED_WEIGHTS: 'resnext50_32x4d.pth'
   LOAD_IMAGENET_PRETRAINED_WEIGHTS: False

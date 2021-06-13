@@ -7,6 +7,7 @@ import scipy.io as sio
 from lib.core.config import cfg
 import torchvision.transforms as transforms
 from lib.utils.logging import setup_logging
+from natsort import natsorted
 
 logger = setup_logging(__name__)
 
@@ -29,8 +30,8 @@ class NYUDV2Dataset():
         else:
             self.sample_ids = natsorted(os.listdir(os.path.join(_sample_dir, 'images')))
 
-        self.A_paths, self.B_paths, self.AB_anno = self.getData()
-        self.data_size = len(self.AB_anno)
+#         self.A_paths, self.B_paths, self.AB_anno = self.getData()
+        self.data_size = len(self.sample_ids)
         self.uniform_size = (480, 640)
 
     def _load_training_sample(self, index):
@@ -109,7 +110,7 @@ class NYUDV2Dataset():
 
         return _img, _depth
 
-    def __getitem__(self, anno_index):
+    def __getitem__(self, index):
         if self.split == 'val' or self.split == 'test':
             _img, _depth = self.get_one_sample(
                 index)  # if use try except; when iterate the object, cannot stop for loop
@@ -124,10 +125,10 @@ class NYUDV2Dataset():
                     print("data load error!", index, "use:  ", tmp)
                     index = tmp
 
-        data = self.online_aug(_img, _depth)
+        data = self.online_aug(_img, _depth, index)
         return data
 
-    def online_aug(self, A, B):
+    def online_aug(self, A, B, index):
         """
         A image B depth
         Augment data for training online randomly. The invalid parts in the depth map are set to -1.0, while the parts
@@ -166,8 +167,8 @@ class NYUDV2Dataset():
         B_bins = self.depth_to_bins(B_resize)
         invalid_side = [int(pad[0] * resize_ratio), 0, 0, 0]
 
-        data = {'A': A_resize, 'B': B_resize, 'A_raw': A, 'B_raw': B, 'B_bins': B_bins, 'A_paths': A_path,
-                'B_paths': B_path, 'invalid_side': np.array(invalid_side), 'ratio': np.float32(1.0 / resize_ratio)}
+        data = {'A': A_resize, 'B': B_resize, 'A_raw': A, 'B_raw': B, 'B_bins': B_bins, 'A_paths': self.sample_ids[index],
+                'B_paths': self.sample_ids[index], 'invalid_side': np.array(invalid_side), 'ratio': np.float32(1.0 / resize_ratio)}
         return data
 
     def set_flip_pad_reshape_crop(self):
